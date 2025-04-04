@@ -5,9 +5,14 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+test_results/
+uv.lock
+coverage.xml
+.coverage
 
 # Virtual environments
 .venv
 
-test_data/
-test_results/
+# macOS
+.DS_Store
