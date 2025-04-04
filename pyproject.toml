@@ -27,7 +27,6 @@ dependencies = [
     "matplotlib>=3.9.4",
     "modelscope>=1.24.1",
     "pandas>=2.2.3",
-    "pyaudio>=0.2.14",
     "pytest>=8.3.5",
     "python-multipart>=0.0.20",
     "torch>=2.6.0",
@@ -36,9 +35,9 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/easy-asr-server"
-"Bug Tracker" = "https://github.com/yourusername/easy-asr-server/issues"
-"Changelog" = "https://github.com/yourusername/easy-asr-server/blob/main/CHANGELOG.md"
+"Homepage" = "https://github.com/3rd-Musketeer/easy-asr-server"
+"Bug Tracker" = "https://github.com/3rd-Musketeer/easy-asr-server/issues"
+"Changelog" = "https://github.com/3rd-Musketeer/easy-asr-server/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -49,6 +48,9 @@ dev = [
     "pytest-cov",
     "build",
     "twine",
+]
+client = [
+    "pyaudio>=0.2.14",
 ]
 
 [project.scripts]

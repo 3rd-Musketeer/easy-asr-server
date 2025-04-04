@@ -62,10 +62,27 @@ pip install -e .
 
 ```bash
 # Install the latest version from GitHub
-pip install git+https://github.com/username/easy_asr_server.git
+pip install git+https://github.com/3rd-Musketeer/easy-asr-server.git
 
-# Replace 'username' with the actual GitHub username/organization
+# For client applications requiring microphone access, install with:
+pip install "git+https://github.com/3rd-Musketeer/easy-asr-server.git#egg=easy-asr-server[client]"
 ```
+
+### Optional Dependencies
+
+The package has optional dependencies for different use cases:
+
+- **Server only** (default): Core server functionality for processing audio files via the API
+- **Client** features: For applications that need to record from a microphone
+  ```bash
+  # Install with client features
+  pip install "easy-asr-server[client]"
+  ```
+- **Development**: Tools for contributing to the project
+  ```bash
+  # Install development tools
+  pip install "easy-asr-server[dev]"
+  ```
 
 ## Usage
 
