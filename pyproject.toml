@@ -1,0 +1,67 @@
+[project]
+name = "easy-asr-server"
+version = "0.1.0"
+description = "A simple high-concurrency speech recognition service based on FunASR"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [
+    {name = "Easy ASR Server Contributors"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "click>=8.1.7",
+    "fastapi>=0.115.12",
+    "filelock>=3.18.0",
+    "funasr>=1.2.6",
+    "httpx>=0.28.1",
+    "matplotlib>=3.9.4",
+    "modelscope>=1.24.1",
+    "pandas>=2.2.3",
+    "pyaudio>=0.2.14",
+    "pytest>=8.3.5",
+    "python-multipart>=0.0.20",
+    "torch>=2.6.0",
+    "torchaudio>=2.6.0",
+    "uvicorn>=0.34.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/easy-asr-server"
+"Bug Tracker" = "https://github.com/yourusername/easy-asr-server/issues"
+"Changelog" = "https://github.com/yourusername/easy-asr-server/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "mypy",
+    "pytest",
+    "pytest-cov",
+    "build",
+    "twine",
+]
+
+[project.scripts]
+easy-asr-server = "easy_asr_server.api:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+
+[tool.isort]
+profile = "black"
+line_length = 88

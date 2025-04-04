@@ -1,0 +1,14 @@
+click>=8.1.7
+fastapi>=0.115.12
+filelock>=3.18.0
+funasr>=1.2.6
+httpx>=0.28.1
+matplotlib>=3.9.4
+modelscope>=1.24.1
+pandas>=2.2.3
+pyaudio>=0.2.14
+pytest>=8.3.5
+python-multipart>=0.0.20
+torch>=2.6.0
+torchaudio>=2.6.0
+uvicorn>=0.34.0 
