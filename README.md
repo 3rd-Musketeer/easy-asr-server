@@ -64,26 +64,6 @@ pip install -e .
 # Install the latest version from GitHub
 pip install git+https://github.com/3rd-Musketeer/easy-asr-server.git
 
-# For client applications requiring microphone access, install with:
-pip install "git+https://github.com/3rd-Musketeer/easy-asr-server.git#egg=easy-asr-server[client]"
-```
-
-### Optional Dependencies
-
-The package has optional dependencies for different use cases:
-
-- **Server only** (default): Core server functionality for processing audio files via the API
-- **Client** features: For applications that need to record from a microphone
-  ```bash
-  # Install with client features
-  pip install "easy-asr-server[client]"
-  ```
-- **Development**: Tools for contributing to the project
-  ```bash
-  # Install development tools
-  pip install "easy-asr-server[dev]"
-  ```
-
 ## Usage
 
 ### Starting the Server
@@ -184,48 +164,6 @@ The service uses the following models from ModelScope:
 - VAD model: `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`
 
 Models are automatically downloaded on first use and cached locally.
-
-## Development
-
-For detailed development documentation, refer to the `dev.md` file in the repository.
-
-## Building and Distribution
-
-To build the package for distribution:
-
-```bash
-# Install build dependencies
-pip install build twine
-
-# Build the package
-python -m build
-
-# This will generate distribution files in the dist/ directory:
-# - A source distribution (.tar.gz)
-# - A wheel distribution (.whl)
-```
-
-### Publishing to PyPI
-
-To publish the package to the Python Package Index (PyPI):
-
-```bash
-# Test the upload to TestPyPI first
-twine upload --repository-url https://test.pypi.org/legacy/ dist/*
-
-# Upload to the actual PyPI
-twine upload dist/*
-```
-
-### Installing from a Built Package
-
-```bash
-# Install from the wheel file
-pip install dist/easy_asr_server-0.1.0-py3-none-any.whl
-
-# Or install from the source distribution
-pip install dist/easy-asr-server-0.1.0.tar.gz
-```
 
 ## License
 

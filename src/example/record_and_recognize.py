@@ -32,7 +32,6 @@ try:
     import pyaudio
 except ImportError:
     print("PyAudio is required for this example but not installed.")
-    print("Install it with: pip install 'easy-asr-server[client]'")
     sys.exit(1)
 
 # Default settings
