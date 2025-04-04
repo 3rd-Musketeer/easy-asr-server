@@ -8,7 +8,7 @@ This script demonstrates how to:
 3. Receive and display the recognition results
 
 Dependencies:
-- pyaudio: for audio recording
+- pyaudio: for audio recording (install with 'pip install "easy-asr-server[client]"')
 - requests: for HTTP requests
 - numpy: for audio data handling
 
@@ -26,7 +26,14 @@ import time
 import sys
 import requests
 import numpy as np
-import pyaudio
+
+# Try to import PyAudio, which is an optional dependency
+try:
+    import pyaudio
+except ImportError:
+    print("PyAudio is required for this example but not installed.")
+    print("Install it with: pip install 'easy-asr-server[client]'")
+    sys.exit(1)
 
 # Default settings
 DEFAULT_SERVER_URL = "http://localhost:8000"
