@@ -63,6 +63,7 @@ pip install -e .
 ```bash
 # Install the latest version from GitHub
 pip install git+https://github.com/3rd-Musketeer/easy-asr-server.git
+```
 
 ## Usage
 
