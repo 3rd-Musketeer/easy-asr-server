@@ -102,39 +102,15 @@ class ModelManager:
         if not self._initialized:
             self._model_paths: Dict[str, str] = {}
             self._download_locks: Dict[str, threading.Lock] = {}
-            self._cache_dir = DEFAULT_CACHE_DIR
+            self._cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "easy_asr_server_models")
             os.makedirs(self._cache_dir, exist_ok=True)
+            logger.info(f"Model cache directory: {self._cache_dir}")
             
             self._loaded_pipeline_instance: Optional[AutoModel] = None
             self._pipeline_type: Optional[str] = None
             self._device: Optional[str] = None
 
             self._initialized = True
-
-    def _resolve_device(self, requested_device: str) -> str:
-        """Resolves 'auto' to a specific device (cuda, mps, cpu)."""
-        if requested_device == "auto":
-            if torch.cuda.is_available():
-                logger.info("Auto-detected CUDA device.")
-                return "cuda"
-            # Check for MPS (Apple Silicon GPU) support
-            elif torch.backends.mps.is_available() and torch.backends.mps.is_built() and platform.system() == "Darwin":
-                 logger.info("Auto-detected MPS device (Apple Silicon GPU).")
-                 return "mps"
-            else:
-                logger.info("Auto-detected CPU device.")
-                return "cpu"
-        # If a specific device is requested, validate it minimally
-        # The underlying library (PyTorch) will do the final validation
-        elif requested_device not in ["cpu", "cuda", "mps"]: # Add other valid torch devices if needed
-             logger.warning(f"Requested device '{requested_device}' is not explicitly validated by ModelManager, passing through.")
-             # We pass it through, PyTorch/FunASR will validate. Avoids strict validation here.
-             # Example: User might request "cuda:0"
-             # However, we could add more robust validation if necessary
-             pass
-             
-        logger.info(f"Using explicitly requested device: {requested_device}")
-        return requested_device
 
     def get_model_path(self, model_id: str) -> str:
         """
@@ -273,21 +249,19 @@ class ModelManager:
         if pipeline_type not in MODEL_CONFIGS:
             raise ValueError(f"Invalid pipeline_type: {pipeline_type}. Available: {list(MODEL_CONFIGS.keys())}")
 
-        # Resolve the device string ('auto' -> 'cuda'/'mps'/'cpu') *before* checking if already loaded
-        resolved_device = self._resolve_device(device)
-
-        # Check if the *resolved* pipeline/device combo is already loaded
+        # Check if the pipeline/device combo is already loaded
         with self._lock: # Ensure thread safety for checking/setting loaded state
             if self._loaded_pipeline_instance is not None:
-                if self._pipeline_type == pipeline_type and self._device == resolved_device:
-                    logger.info(f"Pipeline '{pipeline_type}' on device '{resolved_device}' is already loaded.")
+                # Use the passed device directly for comparison
+                if self._pipeline_type == pipeline_type and self._device == device:
+                    logger.info(f"Pipeline '{pipeline_type}' on device '{device}' is already loaded.")
                     return
                 else:
                     # Cannot load a different pipeline/device if one is already active
-                    raise RuntimeError(f"Another pipeline ('{self._pipeline_type}' on device '{self._device}') is already loaded. Cannot load '{pipeline_type}' on '{resolved_device}'.")
+                    raise RuntimeError(f"Another pipeline ('{self._pipeline_type}' on device '{self._device}') is already loaded. Cannot load '{pipeline_type}' on '{device}'.")
 
             # --- Proceed with loading --- 
-            logger.info(f"Loading pipeline: {pipeline_type} onto resolved device: {resolved_device}")
+            logger.info(f"Loading pipeline: {pipeline_type} onto resolved device: {device}")
             config = MODEL_CONFIGS[pipeline_type]
             downloaded_paths = {} # Store paths of downloaded components
             
@@ -316,17 +290,19 @@ class ModelManager:
                         raise FileNotFoundError(f"Component '{component_type}' needed for AutoModel arg '{constructor_arg}' was not downloaded or its path is missing for pipeline '{pipeline_type}'.")
                     auto_model_kwargs[constructor_arg] = downloaded_paths[component_type]
                 
-                # Add the *resolved* device
-                auto_model_kwargs['device'] = resolved_device
-                
-                logger.info(f"Initializing AutoModel with arguments: {list(auto_model_kwargs.keys())}")
-                # Load the model within the lock to ensure thread safety during initialization
+                # 3. Load the AutoModel
+                logger.info("Loading AutoModel...")
+                # Pass the device directly, and let auto_model_kwargs handle the model path
+                # based on load_params_map
                 self._loaded_pipeline_instance = AutoModel(
-                    **auto_model_kwargs
+                    device=device, 
+                    **auto_model_kwargs # This dict contains model path based on mapping
                 )
+                logger.info(f"AutoModel for '{pipeline_type}' loaded successfully on device '{device}'.")
+
+                # Store the state AFTER successful loading
                 self._pipeline_type = pipeline_type
-                self._device = resolved_device # Store the resolved device name
-                logger.info(f"Successfully loaded pipeline: {pipeline_type} using local models on device: {resolved_device}")
+                self._device = device # Store the device used
 
             except FileNotFoundError as e:
                 logger.error(f"Failed to find a required model component file for pipeline {pipeline_type}: {e}")
@@ -337,7 +313,7 @@ class ModelManager:
                 raise
             except Exception as e:
                 # Catch PyTorch device errors etc.
-                logger.error(f"Failed to load AutoModel for pipeline {pipeline_type} on device {resolved_device}: {str(e)}")
+                logger.error(f"Failed to load AutoModel for pipeline {pipeline_type} on device {device}: {str(e)}")
                 # Reset state even if loading fails
                 self._loaded_pipeline_instance = None
                 self._pipeline_type = None

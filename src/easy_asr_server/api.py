@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 app_state: Dict[str, Any] = {
     "model_manager": None,
     "asr_engine": None,
-    "pipeline_type": DEFAULT_PIPELINE,
+    # "pipeline_type": DEFAULT_PIPELINE, # Remove initial pipeline state
     # "device": "auto", # Remove initial device state
     # "hotword_file_path": None # Remove from initial state
 }
@@ -357,7 +357,7 @@ def run(
 
     # Store configuration in the global state BEFORE uvicorn starts workers
     # Each worker will read this state during its lifespan startup.
-    app_state["pipeline_type"] = pipeline
+    # app_state["pipeline_type"] = pipeline # Don't set state directly
     # app_state["device"] = device # Don't set state directly
     # app_state["hotword_file_path"] = hotword_file # Store the hotword file path
     
