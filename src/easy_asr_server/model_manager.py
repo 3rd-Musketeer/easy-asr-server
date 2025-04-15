@@ -14,6 +14,8 @@ from typing import Optional, Dict, Any, List
 from modelscope import snapshot_download
 from funasr import AutoModel
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
+import torch
+import platform
 
 # Configure logging
 logging.basicConfig(
@@ -108,6 +110,31 @@ class ModelManager:
             self._device: Optional[str] = None
 
             self._initialized = True
+
+    def _resolve_device(self, requested_device: str) -> str:
+        """Resolves 'auto' to a specific device (cuda, mps, cpu)."""
+        if requested_device == "auto":
+            if torch.cuda.is_available():
+                logger.info("Auto-detected CUDA device.")
+                return "cuda"
+            # Check for MPS (Apple Silicon GPU) support
+            elif torch.backends.mps.is_available() and torch.backends.mps.is_built() and platform.system() == "Darwin":
+                 logger.info("Auto-detected MPS device (Apple Silicon GPU).")
+                 return "mps"
+            else:
+                logger.info("Auto-detected CPU device.")
+                return "cpu"
+        # If a specific device is requested, validate it minimally
+        # The underlying library (PyTorch) will do the final validation
+        elif requested_device not in ["cpu", "cuda", "mps"]: # Add other valid torch devices if needed
+             logger.warning(f"Requested device '{requested_device}' is not explicitly validated by ModelManager, passing through.")
+             # We pass it through, PyTorch/FunASR will validate. Avoids strict validation here.
+             # Example: User might request "cuda:0"
+             # However, we could add more robust validation if necessary
+             pass
+             
+        logger.info(f"Using explicitly requested device: {requested_device}")
+        return requested_device
 
     def get_model_path(self, model_id: str) -> str:
         """
@@ -232,81 +259,90 @@ class ModelManager:
 
     def load_pipeline(self, pipeline_type: str, device: str) -> None:
         """
-        Ensures all components for the specified pipeline are downloaded
-        and then loads the FunASR AutoModel using local paths.
+        Loads the specified ASR pipeline onto the specified device.
+        Ensures required model components are downloaded and cached.
+
         Args:
-            pipeline_type: The type of pipeline to load (e.g., "sensevoice", "paraformer").
-                           Must be a key in MODEL_CONFIGS.
-            device: The device to run the model on ('cpu', 'cuda', 'cuda:0', etc.).
+            pipeline_type: The key identifying the pipeline in MODEL_CONFIGS (e.g., 'sensevoice').
+            device: The target device ('auto', 'cuda', 'cpu', 'mps', etc.).
         Raises:
-            ValueError: If pipeline_type is invalid.
-            FileNotFoundError: If a model component cannot be downloaded or found locally.
-            RuntimeError: If the pipeline is already loaded with a different configuration.
-            Exception: Propagates errors from AutoModel loading.
+            ValueError: If the pipeline_type is invalid.
+            RuntimeError: If another pipeline is already loaded or loading fails.
+            FileNotFoundError: If a required model component file cannot be found/downloaded.
         """
         if pipeline_type not in MODEL_CONFIGS:
             raise ValueError(f"Invalid pipeline_type: {pipeline_type}. Available: {list(MODEL_CONFIGS.keys())}")
 
-        if self._loaded_pipeline_instance is not None:
-            if self._pipeline_type == pipeline_type and self._device == device:
-                 logger.info(f"Pipeline '{pipeline_type}' on device '{device}' is already loaded.")
-                 return
-            else:
-                 raise RuntimeError(f"Another pipeline ('{self._pipeline_type}' on device '{self._device}') is already loaded. Cannot load '{pipeline_type}' on '{device}'.")
+        # Resolve the device string ('auto' -> 'cuda'/'mps'/'cpu') *before* checking if already loaded
+        resolved_device = self._resolve_device(device)
 
+        # Check if the *resolved* pipeline/device combo is already loaded
+        with self._lock: # Ensure thread safety for checking/setting loaded state
+            if self._loaded_pipeline_instance is not None:
+                if self._pipeline_type == pipeline_type and self._device == resolved_device:
+                    logger.info(f"Pipeline '{pipeline_type}' on device '{resolved_device}' is already loaded.")
+                    return
+                else:
+                    # Cannot load a different pipeline/device if one is already active
+                    raise RuntimeError(f"Another pipeline ('{self._pipeline_type}' on device '{self._device}') is already loaded. Cannot load '{pipeline_type}' on '{resolved_device}'.")
 
-        logger.info(f"Loading pipeline: {pipeline_type} on device: {device}")
-        config = MODEL_CONFIGS[pipeline_type]
-        downloaded_paths = {} # Store paths of downloaded components
-
-        try:
-            # 1. Ensure all required components are downloaded and get their paths
-            logger.info("Ensuring model components are downloaded...")
-            components_to_download = config.get("components", {})
-            if not components_to_download:
-                raise ValueError(f"Pipeline '{pipeline_type}' has no components defined for download.")
+            # --- Proceed with loading --- 
+            logger.info(f"Loading pipeline: {pipeline_type} onto resolved device: {resolved_device}")
+            config = MODEL_CONFIGS[pipeline_type]
+            downloaded_paths = {} # Store paths of downloaded components
+            
+            try:
+                # 1. Ensure all required components are downloaded and get their paths
+                logger.info("Ensuring model components are downloaded...")
+                components_to_download = config.get("components", {})
+                if not components_to_download:
+                    raise ValueError(f"Pipeline '{pipeline_type}' has no components defined for download.")
+                    
+                for component_type, model_id in components_to_download.items():
+                    logger.info(f"Checking/Downloading {component_type} model: {model_id}")
+                    path = self.get_model_path(model_id) # This handles download and path retrieval
+                    downloaded_paths[component_type] = path
+                    logger.info(f"Using {component_type} model from: {path}")
                 
-            for component_type, model_id in components_to_download.items():
-                logger.info(f"Checking/Downloading {component_type} model: {model_id}")
-                path = self.get_model_path(model_id) # This handles download and path retrieval
-                downloaded_paths[component_type] = path
-                logger.info(f"Using {component_type} model from: {path}")
-            
-            # 2. Load the AutoModel using the local paths based on the pipeline's mapping
-            logger.info("Preparing AutoModel arguments...")
-            load_param_mapping = config.get("load_params_map", {})
-            if not load_param_mapping:
-                raise ValueError(f"Pipeline '{pipeline_type}' has no load_params_map defined.")
+                # 2. Load the AutoModel using the local paths based on the pipeline's mapping
+                logger.info("Preparing AutoModel arguments...")
+                load_param_mapping = config.get("load_params_map", {})
+                if not load_param_mapping:
+                    raise ValueError(f"Pipeline '{pipeline_type}' has no load_params_map defined.")
+                    
+                auto_model_kwargs = {}
+                for constructor_arg, component_type in load_param_mapping.items():
+                    if component_type not in downloaded_paths:
+                        raise FileNotFoundError(f"Component '{component_type}' needed for AutoModel arg '{constructor_arg}' was not downloaded or its path is missing for pipeline '{pipeline_type}'.")
+                    auto_model_kwargs[constructor_arg] = downloaded_paths[component_type]
                 
-            auto_model_kwargs = {}
-            for constructor_arg, component_type in load_param_mapping.items():
-                if component_type not in downloaded_paths:
-                    raise FileNotFoundError(f"Component '{component_type}' needed for AutoModel arg '{constructor_arg}' was not downloaded or its path is missing for pipeline '{pipeline_type}'.")
-                auto_model_kwargs[constructor_arg] = downloaded_paths[component_type]
-            
-            # Add the device
-            auto_model_kwargs['device'] = device
-            
-            logger.info(f"Initializing AutoModel with arguments: {list(auto_model_kwargs.keys())}")
-            self._loaded_pipeline_instance = AutoModel(
-                **auto_model_kwargs
-            )
-            self._pipeline_type = pipeline_type
-            self._device = device
-            logger.info(f"Successfully loaded pipeline: {pipeline_type} using local models on device: {device}")
+                # Add the *resolved* device
+                auto_model_kwargs['device'] = resolved_device
+                
+                logger.info(f"Initializing AutoModel with arguments: {list(auto_model_kwargs.keys())}")
+                # Load the model within the lock to ensure thread safety during initialization
+                self._loaded_pipeline_instance = AutoModel(
+                    **auto_model_kwargs
+                )
+                self._pipeline_type = pipeline_type
+                self._device = resolved_device # Store the resolved device name
+                logger.info(f"Successfully loaded pipeline: {pipeline_type} using local models on device: {resolved_device}")
 
-        except FileNotFoundError as e:
-            logger.error(f"Failed to find a required model component file for pipeline {pipeline_type}: {e}")
-            self._loaded_pipeline_instance = None # Ensure state is clean on failure
-            self._pipeline_type = None
-            self._device = None
-            raise
-        except Exception as e:
-            logger.error(f"Failed to load AutoModel for pipeline {pipeline_type} on device {device}: {str(e)}")
-            self._loaded_pipeline_instance = None # Ensure state is clean on failure
-            self._pipeline_type = None
-            self._device = None
-            raise
+            except FileNotFoundError as e:
+                logger.error(f"Failed to find a required model component file for pipeline {pipeline_type}: {e}")
+                # Reset state even if loading fails
+                self._loaded_pipeline_instance = None
+                self._pipeline_type = None
+                self._device = None
+                raise
+            except Exception as e:
+                # Catch PyTorch device errors etc.
+                logger.error(f"Failed to load AutoModel for pipeline {pipeline_type} on device {resolved_device}: {str(e)}")
+                # Reset state even if loading fails
+                self._loaded_pipeline_instance = None
+                self._pipeline_type = None
+                self._device = None
+                raise
 
 
     def generate(self, input_audio: Any, hotword: str = "", **kwargs) -> str:
