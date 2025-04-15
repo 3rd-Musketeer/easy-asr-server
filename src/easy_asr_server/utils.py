@@ -35,6 +35,85 @@ class AudioProcessingError(Exception):
     pass
 
 
+def resolve_device_string(device: str) -> str:
+    """Resolves the device string 'auto' and validates specific device strings.
+
+    Args:
+        device: The requested device string (e.g., "auto", "cpu", "cuda", "cuda:0", "mps").
+
+    Returns:
+        The validated and resolved device string (e.g., "cpu", "cuda", "mps").
+
+    Raises:
+        ValueError: If the specified device string is invalid or the requested hardware
+                    (CUDA/MPS) is not available or the CUDA index is invalid.
+    """
+    logger.info(f"Resolving device string: '{device}'")
+
+    if device == "auto":
+        if torch.cuda.is_available():
+            resolved = "cuda"
+            logger.info("'auto' resolved to 'cuda' (CUDA available).")
+        elif torch.backends.mps.is_available(): # Check MPS only if CUDA not found
+            resolved = "mps"
+            logger.info("'auto' resolved to 'mps' (CUDA unavailable, MPS available).")
+        else:
+            resolved = "cpu"
+            logger.info("'auto' resolved to 'cpu' (CUDA and MPS unavailable).")
+        return resolved
+
+    elif device == "cpu":
+        logger.info("Using 'cpu' device.")
+        return device # Always available
+
+    elif device == "mps":
+        if not torch.backends.mps.is_available():
+            logger.error("MPS device requested but not available.")
+            raise ValueError("MPS device requested but not available")
+        logger.info("Using 'mps' device.")
+        return device
+
+    elif device == "cuda" or device.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            logger.error("CUDA device requested but not available.")
+            raise ValueError("CUDA device requested but not available")
+        
+        if device == "cuda":
+            logger.info("Using 'cuda' device (implicitly cuda:0).")
+            return device # Use default CUDA device
+        
+        # Validate cuda:N format and index
+        try:
+            parts = device.split(':')
+            if len(parts) != 2 or not parts[1].isdigit():
+                raise ValueError(f"Invalid CUDA device format: {device}")
+            
+            index = int(parts[1])
+            count = torch.cuda.device_count()
+            
+            if index < 0:
+                 raise ValueError(f"Invalid CUDA device index: {index}. Index cannot be negative.")
+            if index >= count:
+                available_indices = list(range(count))
+                logger.error(f"Invalid CUDA device index: {index}. Available indices: {available_indices}")
+                raise ValueError(f"Invalid CUDA device index: {index}. Available indices: {available_indices}")
+            
+            logger.info(f"Using specific CUDA device: '{device}'")
+            return device # Valid index
+            
+        except ValueError as e: # Catch parsing errors or index errors
+             logger.error(f"Error validating CUDA device string '{device}': {e}")
+             # Re-raise specific errors for clarity or a general one
+             if "Invalid CUDA device format" in str(e) or "Invalid CUDA device index" in str(e):
+                 raise e
+             else: # Catch potential int() conversion errors, though isdigit should prevent this
+                 raise ValueError(f"Invalid CUDA device format: {device}")
+
+    else:
+        logger.error(f"Invalid device string specified: '{device}'")
+        raise ValueError(f"Invalid device string specified: '{device}'")
+
+
 def setup_logging(level: int = logging.INFO) -> None:
     """
     Configure the logging for the application.

@@ -26,7 +26,7 @@ from starlette.status import (
 
 from .asr_engine import ASREngine
 from .model_manager import ModelManager, MODEL_CONFIGS, DEFAULT_PIPELINE
-from .utils import process_audio, AudioProcessingError, setup_logging, read_hotwords
+from .utils import process_audio, AudioProcessingError, setup_logging, read_hotwords, resolve_device_string
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -52,12 +52,18 @@ async def lifespan(app: FastAPI):
     setup_logging() # Ensure logging is set up in each worker
 
     pipeline_type = app_state["pipeline_type"] # Get config from global state
-    device = app_state["device"]
+    requested_device = app_state["device"]
+    resolved_device = None # Initialize
     
     try:
-        logger.info(f"Initializing ModelManager and loading pipeline '{pipeline_type}' on device '{device}'...")
+        # Resolve the device string (e.g., "auto" -> "cuda" or "cpu")
+        resolved_device = resolve_device_string(requested_device)
+        app_state["device"] = resolved_device # Store the actual device being used
+        
+        logger.info(f"Initializing ModelManager and loading pipeline '{pipeline_type}' on resolved device '{resolved_device}'...")
         model_manager = ModelManager()
-        model_manager.load_pipeline(pipeline_type=pipeline_type, device=device)
+        # Pass the resolved device string
+        model_manager.load_pipeline(pipeline_type=pipeline_type, device=resolved_device)
         app_state["model_manager"] = model_manager # Store instance in state
         
         logger.info("Initializing ASREngine...")
@@ -66,6 +72,10 @@ async def lifespan(app: FastAPI):
         
         logger.info("ASR Engine and Model Manager initialized successfully in worker process.")
         
+    except ValueError as e: # Catch errors from resolve_device_string
+        logger.error(f"Fatal error during worker startup - Invalid device configuration: {str(e)}", exc_info=True)
+        app_state["asr_engine"] = None
+        app_state["model_manager"] = None 
     except Exception as e:
         logger.error(f"Fatal error during worker startup: {str(e)}", exc_info=True)
         # Optionally, could set a flag indicating the worker is unhealthy
