@@ -13,7 +13,7 @@ from .utils import (
     AudioProcessingError,
     setup_logging
 )
-from .asr_engine import ASREngine, ASREngineError
+from .asr_engine import ASREngine
 
 # Public API to be exported
 __all__ = [
@@ -24,5 +24,4 @@ __all__ = [
     "AudioProcessingError",
     "setup_logging",
     "ASREngine",
-    "ASREngineError",
 ]

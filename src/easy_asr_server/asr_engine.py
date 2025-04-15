@@ -1,201 +1,137 @@
 """
 ASR Engine Module for easy_asr_server
 
-This module encapsulates the functionality of FunASR's AutoModel for speech recognition.
-It handles the initialization of the ASR and VAD models, device detection,
-and provides methods for speech recognition.
+This module defines the ASREngine class which handles the core ASR processing
+using a pre-configured pipeline provided by the ModelManager.
 """
 
-import os
 import logging
-import tempfile
-import re
-from typing import Dict, Optional, Tuple, Union, Any
-
 import torch
+import numpy as np
+from typing import Any, Dict, List, Optional
+import tempfile
+import os
 import torchaudio
-from funasr import AutoModel
 
-from .model_manager import ModelManager, DEFAULT_ASR_MODEL_ID
-from .utils import AudioProcessingError, save_audio_to_file
+# Removed AutoModel import
+# from funasr import AutoModel 
+from .model_manager import ModelManager # Added import
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
-
-
-class ASREngineError(Exception):
-    """Exception raised for errors in the ASR engine."""
-    pass
 
 
 class ASREngine:
     """
-    Encapsulates FunASR's AutoModel for speech recognition.
-    Handles the initialization of models and provides recognition functionality.
+    Handles Automatic Speech Recognition using a pipeline loaded by ModelManager.
+    Receives audio data, passes it to the ModelManager's generate method,
+    and returns the recognition results.
     """
-    
-    def __init__(self, asr_model_path: str, vad_model_path: str, device: str = "auto"):
+
+    # Removed internal model loading and device handling
+    # def __init__(self, asr_model_path: str, vad_model_path: str, punc_model_path: str, device: str):
+    def __init__(self, model_manager: ModelManager):
         """
-        Initialize the ASR engine with the specified model and device.
-        
+        Initialize the ASR Engine.
         Args:
-            asr_model_path: Path to the ASR model (SenseVoiceSmall)
-            vad_model_path: Path to the VAD model
-            device: Device to use for inference ('auto', 'cpu', 'cuda'). 
-                   If 'auto', will use CUDA if available, else CPU.
+            model_manager: An initialized instance of ModelManager with a loaded pipeline.
         """
-        self.asr_model_path = asr_model_path
-        self.vad_model_path = vad_model_path
-        
-        # Determine the device to use
-        if device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
-            
-        logger.info(f"Initializing ASR engine with device: {self.device}")
-        
-        try:
-            # Initialize the FunASR AutoModel
-            self.model = AutoModel(
-                model=asr_model_path,
-                device=self.device,
-                vad_model=vad_model_path,
-                language='auto',
-            )
-            
-            logger.info(f"ASR engine initialized successfully with model at {asr_model_path} and VAD model at {vad_model_path}")
-            
-            # Run a quick health check
-            self._run_health_check()
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize ASR engine: {str(e)}")
-            raise ASREngineError(f"Failed to initialize ASR engine: {str(e)}")
-    
-    def _run_health_check(self):
+        logger.info("Initializing ASREngine...")
+        self.model_manager = model_manager
+        # The actual pipeline instance is now managed within ModelManager
+        # self.device = device
+        # self.model = self._load_model(asr_model_path, vad_model_path, punc_model_path, device)
+        logger.info("ASREngine initialized.")
+
+    # Removed internal model loading method
+    # def _load_model(self, asr_model_path, vad_model_path, punc_model_path, device):
+    #     logger.info(f"Loading FunASR AutoModel...")
+    #     logger.info(f"  ASR Model Path: {asr_model_path}")
+    #     logger.info(f"  VAD Model Path: {vad_model_path}")
+    #     logger.info(f"  PUNC Model Path: {punc_model_path}")
+    #     logger.info(f"  Device: {device}")
+    #     try:
+    #         model = AutoModel(
+    #             model=asr_model_path,
+    #             vad_model=vad_model_path,
+    #             punc_model=punc_model_path,
+    #             device=device
+    #             # Consider adding other relevant AutoModel params if needed
+    #         )
+    #         logger.info("FunASR AutoModel loaded successfully.")
+    #         return model
+    #     except Exception as e:
+    #         logger.error(f"Failed to load FunASR AutoModel: {str(e)}", exc_info=True)
+    #         raise RuntimeError(f"Could not load the ASR model pipeline.") from e
+
+    def recognize(self, audio_input: str, hotword: str = "") -> str:
         """
-        Run a quick health check to ensure the model is loaded correctly.
-        
-        Raises:
-            ASREngineError: If the health check fails
-        """
-        try:
-            # Create a short silent audio sample for testing
-            silent_audio = torch.zeros(1, 16000).to(self.device)  # 1 second of silence
-            
-            # Save to a temporary file
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp_path = tmp.name
-            
-            torchaudio.save(tmp_path, silent_audio.cpu(), 16000)
-            
-            try:
-                # Try to run inference
-                _ = self.model.generate(input=tmp_path)
-                logger.info("ASR engine health check passed")
-            finally:
-                # Clean up the temporary file
-                os.unlink(tmp_path)
-                
-        except Exception as e:
-            logger.error(f"ASR engine health check failed: {str(e)}")
-            raise ASREngineError(f"ASR engine health check failed: {str(e)}")
-    
-    def _clean_asr_output(self, text: str) -> str:
-        """
-        Clean special tags from ASR output.
-        
+        Recognize speech from an audio file path.
+
         Args:
-            text: Raw text from ASR model
-            
+            audio_input: Path to the audio file.
+            hotword: Optional space-separated string of hotwords.
+
         Returns:
-            str: Cleaned text without special tags
-        """
-        # Remove tags like <|en|>, <|EMO_UNKNOWN|>, <|Speech|>, <|woitn|>
-        cleaned_text = re.sub(r'<\|[^|]*\|>', '', text)
-        return cleaned_text.strip()
-    
-    def recognize(self, waveform: torch.Tensor, sample_rate: int) -> str:
-        """
-        Perform speech recognition on the given audio waveform.
-        
-        Args:
-            waveform: Audio waveform as a tensor (shape: [1, samples])
-            sample_rate: Sample rate of the audio (should be 16000)
-            
-        Returns:
-            str: The recognized text
-            
+            The recognized text transcription.
         Raises:
-            ASREngineError: If recognition fails
+            RuntimeError: If the underlying model manager fails during generation.
         """
-        # Save the waveform to a temporary file for FunASR
+        logger.info("Received audio for recognition.")
         try:
-            tmp_path = save_audio_to_file(waveform, sample_rate)
-            
-            try:
-                # Run speech recognition
-                result = self.model.generate(input=tmp_path)
-                
-                # Extract text from result
-                raw_text = None
-                if isinstance(result, list) and len(result) > 0:
-                    if isinstance(result[0], dict) and "text" in result[0]:
-                        raw_text = result[0]["text"]
-                    elif isinstance(result[0], str):
-                        raw_text = result[0]
-                    
-                if raw_text is None:
-                    # If we reach here, we couldn't extract text in a standard way
-                    logger.warning(f"Unexpected result format from ASR engine: {result}")
-                    raw_text = str(result)
-                
-                # Clean the output text
-                cleaned_text = self._clean_asr_output(raw_text)
-                logger.debug(f"Original ASR output: '{raw_text}', Cleaned: '{cleaned_text}'")
-                
-                return cleaned_text
-                
-            finally:
-                # Clean up temporary file
-                os.unlink(tmp_path)
-                
+            # Delegate the actual generation to the ModelManager
+            # Pass the hotword string along
+            result = self.model_manager.generate(input_audio=audio_input, hotword=hotword)
+            logger.info(f"Recognition successful for input: {os.path.basename(audio_input)}")
+            return result
         except Exception as e:
-            logger.error(f"ASR recognition failed: {str(e)}")
-            raise ASREngineError(f"ASR recognition failed: {str(e)}")
-    
+            logger.error(f"Error during ASR processing: {str(e)}", exc_info=True)
+            # Re-raise as a runtime error to be caught by the API layer
+            raise RuntimeError(f"ASR generation failed: {str(e)}") from e
+
     def test_health(self) -> bool:
         """
-        Test if the ASR engine is healthy.
-        
+        Perform a quick health check of the ASR engine.
+        Tries to process a short silent audio segment saved to a temp file.
+
         Returns:
-            bool: True if the engine is healthy, False otherwise
+            bool: True if the engine appears healthy, False otherwise.
         """
+        temp_audio_path: Optional[str] = None
         try:
-            self._run_health_check()
-            return True
-        except Exception:
-            return False
-    
-    @classmethod
-    def create(cls, device: str = "auto") -> "ASREngine":
-        """
-        Create an ASR engine with default models.
-        
-        Args:
-            device: Device to use for inference ('auto', 'cpu', 'cuda')
+            logger.info("Performing ASREngine health check...")
+            # Create a short silent audio signal
+            sample_rate = 16000
+            duration_ms = 100
+            silent_audio_tensor = torch.zeros((1, int(sample_rate * duration_ms / 1000)), dtype=torch.float32)
             
-        Returns:
-            ASREngine: Initialized ASR engine
-        """
-        # Download and get paths for models
-        model_manager = ModelManager()
-        model_paths = model_manager.ensure_models_downloaded()
-        
-        # Create and return the engine
-        return cls(
-            asr_model_path=model_paths["asr"],
-            vad_model_path=model_paths["vad"],
-            device=device
-        )
+            # Save the silent audio to a temporary file
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_f:
+                temp_audio_path = tmp_f.name
+            torchaudio.save(temp_audio_path, silent_audio_tensor, sample_rate)
+            logger.debug(f"Saved silent audio for health check to: {temp_audio_path}")
+            
+            # Call recognize with the path to the silent audio file
+            _ = self.recognize(audio_input=temp_audio_path)
+            logger.info("ASREngine health check passed.")
+            return True
+        except Exception as e:
+            logger.error(f"ASREngine health check failed: {str(e)}", exc_info=True)
+            return False
+        finally:
+            # Clean up the temporary file created for the health check
+            if temp_audio_path and os.path.exists(temp_audio_path):
+                try:
+                    os.unlink(temp_audio_path)
+                    logger.debug(f"Deleted health check temp file: {temp_audio_path}")
+                except OSError as unlink_error:
+                     logger.warning(f"Could not delete health check temp file '{temp_audio_path}': {unlink_error}")
+
+    # Removed detect_device static method (responsibility moved or handled at startup)
+    # @staticmethod
+    # def detect_device(preferred_device: str = "auto") -> str:
+    #     # ... (previous device detection logic)

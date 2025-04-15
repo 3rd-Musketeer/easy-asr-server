@@ -6,144 +6,117 @@ import os
 import unittest
 import tempfile
 from unittest import mock
+import numpy as np
+import json
 import torch
 import torchaudio
-import json
+import shutil
 
-from easy_asr_server.asr_engine import ASREngine, ASREngineError
+from easy_asr_server.asr_engine import ASREngine
+from easy_asr_server.model_manager import ModelManager
 
 
-class MockAutoModel:
-    """Mock for FunASR AutoModel class"""
-    
-    def __init__(self, model, device=None, **kwargs):
-        self.model = model
-        self.device = device
-        self.kwargs = kwargs
-        
-    def generate(self, input, **kwargs):
-        """Mock generate method that returns a fixed result"""
-        # Check if the input is a file path and it exists
-        if isinstance(input, str) and os.path.exists(input):
-            # Return a mock result with recognized text
-            return [{"text": "mock recognized text"}]
-        else:
-            raise ValueError(f"Invalid input: {input}")
+class MockModelManager:
+    def __init__(self):
+        self.generate_called = False
+        self.generate_input_audio = None
+        self.generate_kwargs = None
+        # Allow setting custom return value or exception
+        self._generate_return_value = "mock manager generated text"
+        self._generate_side_effect = None # To store exception or callable
+
+    def generate(self, input_audio, **kwargs):
+        self.generate_called = True
+        self.generate_input_audio = input_audio
+        self.generate_kwargs = kwargs
+        # Check if a side effect (like an exception) is set
+        if self._generate_side_effect is not None:
+            if isinstance(self._generate_side_effect, Exception):
+                raise self._generate_side_effect
+            else: # Assume it's a callable
+                return self._generate_side_effect(input_audio, **kwargs)
+        # Otherwise, return the configured value
+        return self._generate_return_value
 
 
 class TestASREngine(unittest.TestCase):
-    """Test cases for the ASREngine class"""
+    """Test cases for the refactored ASREngine class"""
     
     def setUp(self):
         """Setup for tests"""
-        # Create a temporary directory
+        # Create a mock ModelManager instance
+        self.mock_manager = MockModelManager()
+        
+        # Initialize the engine with the mock manager
+        self.engine = ASREngine(model_manager=self.mock_manager)
+        
+        # Create a dummy audio file path for testing recognize
         self.temp_dir = tempfile.mkdtemp()
-        
-        # Create a mock model path
-        self.mock_model_path = os.path.join(self.temp_dir, "mock_model")
-        os.makedirs(self.mock_model_path, exist_ok=True)
-        
-        # Create a mock VAD model path
-        self.mock_vad_model_path = os.path.join(self.temp_dir, "mock_vad_model")
-        os.makedirs(self.mock_vad_model_path, exist_ok=True)
-        
-        # Create a test audio file
-        self.test_audio_path = os.path.join(self.temp_dir, "test_audio.wav")
-        self._create_test_audio_file(self.test_audio_path)
-        
-        # Mock the AutoModel class
-        self.patcher = mock.patch('easy_asr_server.asr_engine.AutoModel', MockAutoModel)
-        self.mock_auto_model = self.patcher.start()
-    
+        self.test_audio_path = os.path.join(self.temp_dir, "test_asr_engine_audio.wav")
+        # Create a minimal valid wav file
+        torchaudio.save(self.test_audio_path, torch.zeros((1, 1600)), 16000)
+
     def tearDown(self):
         """Cleanup after tests"""
-        import shutil
-        shutil.rmtree(self.temp_dir)
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_recognize_success(self):
+        """Test successful recognition call."""
+        audio_path = "dummy_audio.wav"
+        expected_text = "recognized text result"
+        input_hotword = "engine hotword test"
+        # Set the return value on the mock manager instance
+        self.mock_manager._generate_return_value = expected_text
+        self.mock_manager._generate_side_effect = None # Ensure no exception
         
-        # Stop the patcher
-        self.patcher.stop()
-    
-    def _create_test_audio_file(self, file_path, sample_rate=16000, duration=1.0):
-        """Create a test audio file"""
-        # Generate a sine wave
-        samples = int(sample_rate * duration)
-        t = torch.linspace(0, duration, samples)
-        wave = torch.sin(2 * torch.pi * 440 * t).unsqueeze(0)  # 440 Hz sine wave, mono
+        # Call recognize with hotword
+        result = self.engine.recognize(audio_path, hotword=input_hotword)
         
-        # Save the file
-        torchaudio.save(file_path, wave, sample_rate)
-        return file_path
-    
-    def test_initialization(self):
-        """Test that ASREngine initializes correctly"""
-        # Initialize the engine
-        engine = ASREngine(self.mock_model_path, self.mock_vad_model_path)
+        self.assertEqual(result, expected_text)
+        # Verify generate was called by checking attributes on the mock manager instance
+        self.assertTrue(self.mock_manager.generate_called)
+        self.assertEqual(self.mock_manager.generate_input_audio, audio_path)
+        self.assertEqual(self.mock_manager.generate_kwargs, {"hotword": input_hotword})
+
+    def test_recognize_failure(self):
+        """Test recognition when ModelManager raises an exception."""
+        audio_path = "failing_audio.wav"
+        error_message = "Model generation failed"
+        # Set the side effect (exception) on the mock manager instance
+        self.mock_manager._generate_side_effect = RuntimeError(error_message)
         
-        # Check that the model was initialized
-        self.assertIsNotNone(engine.model)
-        
-        # Check that the model path was set
-        self.assertEqual(engine.asr_model_path, self.mock_model_path)
-        self.assertEqual(engine.vad_model_path, self.mock_vad_model_path)
-    
-    def test_device_detection(self):
-        """Test that ASREngine correctly handles device specification"""
-        # Test with auto detection
-        engine_auto = ASREngine(self.mock_model_path, self.mock_vad_model_path, device="auto")
-        self.assertIn(engine_auto.device, ["cpu", "cuda"])
-        
-        # Test with explicit CPU
-        engine_cpu = ASREngine(self.mock_model_path, self.mock_vad_model_path, device="cpu")
-        self.assertEqual(engine_cpu.device, "cpu")
-        
-        # Test with explicit CUDA (if available)
-        if torch.cuda.is_available():
-            engine_cuda = ASREngine(self.mock_model_path, self.mock_vad_model_path, device="cuda")
-            self.assertEqual(engine_cuda.device, "cuda")
-    
-    def test_recognize(self):
-        """Test the recognize method"""
-        # Load the test audio
-        waveform, sample_rate = torchaudio.load(self.test_audio_path)
-        
-        # Initialize the engine
-        engine = ASREngine(self.mock_model_path, self.mock_vad_model_path)
-        
-        # Call recognize
-        text = engine.recognize(waveform, sample_rate)
-        
-        # Should return the mock text
-        self.assertEqual(text, "mock recognized text")
-    
-    def test_health_check(self):
-        """Test the health check functionality"""
-        # Initialize the engine
-        engine = ASREngine(self.mock_model_path, self.mock_vad_model_path)
-        
-        # Check health
-        self.assertTrue(engine.test_health())
-    
-    def test_create_class_method(self):
-        """Test the create class method"""
-        # Mock the ModelManager
-        with mock.patch('easy_asr_server.asr_engine.ModelManager') as mock_manager:
-            # Configure the mock
-            mock_manager_instance = mock_manager.return_value
-            mock_manager_instance.ensure_models_downloaded.return_value = {
-                "asr": self.mock_model_path,
-                "vad": self.mock_vad_model_path
-            }
+        # Expect recognize to propagate the exception
+        with self.assertRaisesRegex(RuntimeError, error_message):
+            self.engine.recognize(audio_path, hotword="fail_hotword") # Pass hotword
             
-            # Call the create method
-            engine = ASREngine.create()
-            
-            # Check that ModelManager was called correctly
-            mock_manager.assert_called_once()
-            mock_manager_instance.ensure_models_downloaded.assert_called_once()
-            
-            # Check that the engine was initialized with the mock model paths
-            self.assertEqual(engine.asr_model_path, self.mock_model_path)
-            self.assertEqual(engine.vad_model_path, self.mock_vad_model_path)
+        # Verify generate was called by checking attributes on the mock manager instance
+        self.assertTrue(self.mock_manager.generate_called)
+        self.assertEqual(self.mock_manager.generate_input_audio, audio_path)
+        self.assertEqual(self.mock_manager.generate_kwargs, {"hotword": "fail_hotword"})
+
+    def test_health_check_success(self):
+        """Test the health check passes when ModelManager is healthy"""
+        # Mock os.unlink to prevent errors trying to delete the temp file created by health_check
+        with mock.patch('os.unlink') as mock_unlink:
+            self.assertTrue(self.engine.test_health())
+            # Check that generate was called during health check
+            self.assertTrue(self.mock_manager.generate_called)
+            # Verify the input was a string (path) and ends with .wav
+            self.assertIsInstance(self.mock_manager.generate_input_audio, str)
+            self.assertTrue(self.mock_manager.generate_input_audio.endswith(".wav"))
+            # Assert os.unlink was called, indicating cleanup was attempted
+            mock_unlink.assert_called_once()
+        
+    def test_health_check_failure(self):
+        """Test the health check fails when ModelManager.generate fails"""
+        # Set the side effect for generate to raise an error
+        self.mock_manager._generate_side_effect = RuntimeError("Health check generate failed")
+        # Mock os.unlink
+        with mock.patch('os.unlink') as mock_unlink:
+            self.assertFalse(self.engine.test_health())
+            # Assert os.unlink was still called in the finally block
+            mock_unlink.assert_called_once()
 
 
 if __name__ == '__main__':

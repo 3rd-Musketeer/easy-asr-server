@@ -45,6 +45,23 @@ python send_file.py --file path/to/your/audio.wav
 python send_file.py --file path/to/your/audio.wav --server http://example.com:8000
 ```
 
+### 3. Manage Hotwords (manage_hotwords.py)
+
+This script allows you to view and update the hotwords list on the server, provided the server was started with the `--hotword-file` option.
+
+```bash
+# Get the current list of hotwords from the server
+python manage_hotwords.py get
+python manage_hotwords.py get --server http://your-server:port
+
+# Set the hotwords list from a file (one word per line)
+# Create a file named e.g., my_hotwords.txt with content like:
+# OpenAI
+# ChatGPT
+python manage_hotwords.py set --input-file my_hotwords.txt
+python manage_hotwords.py set --input-file my_hotwords.txt --server http://your-server:port
+```
+
 ## Troubleshooting
 
 1. **Server Connection Issues**

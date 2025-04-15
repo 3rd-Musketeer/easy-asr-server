@@ -10,9 +10,17 @@ test_results/
 uv.lock
 coverage.xml
 .coverage
+.coverage.*
 
 # Virtual environments
 .venv
 
 # macOS
 .DS_Store
+
+# Output directories
+results/
+
+# Example outputs/configs
+recorded_audio.wav
+hotword.txt
