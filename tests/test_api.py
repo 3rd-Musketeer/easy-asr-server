@@ -257,38 +257,70 @@ class TestCLI(unittest.TestCase):
 
     def setUp(self):
         self.runner = CliRunner()
-        # Store original app_state values to restore later
-        self.original_hotword_path = app_state.get("hotword_file_path")
+        # Store original app_state values to restore later - No longer needed for hotword path
+        # self.original_hotword_path = app_state.get("hotword_file_path")
 
     def tearDown(self):
-        # Restore original state
-        app_state["hotword_file_path"] = self.original_hotword_path
+        # Restore original state - No longer needed for hotword path
+        # app_state["hotword_file_path"] = self.original_hotword_path
+        pass # No app_state cleanup needed for hotword path now
 
     def test_cli_hotword_file_option(self):
-        """Test the 'run' command with the --hotword-file option."""
+        """Test the 'run' command sets the environment variable for --hotword-file."""
         dummy_path = "/path/to/my/hotwords.txt"
+        env_var = "EASY_ASR_HOTWORD_FILE"
         
         # Mock the function that actually starts the server to prevent it running
         # Also mock setup_logging as it's called in the command
+        # Use patch.dict to manage the environment variable for the test
         with mock.patch('easy_asr_server.api._start_uvicorn') as mock_start, \
-             mock.patch('easy_asr_server.api.setup_logging') as mock_log_setup:
+             mock.patch('easy_asr_server.api.setup_logging') as mock_log_setup, \
+             mock.patch.dict(os.environ, {}, clear=True) as mock_env: # Start with clean env for test
             
             result = self.runner.invoke(
                 app_cli, 
                 ["--hotword-file", dummy_path]
             )
             
-            # Check if the command executed successfully (exit code 0)
-            # Typer might exit with code 1 if validation fails, 
-            # but basic option passing should work.
-            # We mock _start_uvicorn, so it won't fully run/fail there.
             # print(f"CLI Invoke Result: {result.stdout}, Exit Code: {result.exit_code}") # Debugging
-            # self.assertEqual(result.exit_code, 0) # Skip exit code check as server doesn't fully start
+            # self.assertEqual(result.exit_code, 0) # Optional: Check exit code if desired
 
             # Verify _start_uvicorn was called (meaning command logic ran up to that point)
             mock_start.assert_called_once() 
-            # Verify the hotword file path was set correctly in app_state
-            self.assertEqual(app_state.get("hotword_file_path"), dummy_path)
+            # Verify the environment variable was set correctly
+            self.assertEqual(os.environ.get(env_var), dummy_path)
+            # Ensure app_state is NOT set directly by the command anymore
+            self.assertIsNone(app_state.get("hotword_file_path"))
+            # Also check device/pipeline env vars are set if needed in other tests
+            self.assertIn("EASY_ASR_DEVICE", os.environ)
+            self.assertIn("EASY_ASR_PIPELINE", os.environ)
+            self.assertIn("EASY_ASR_LOG_LEVEL", os.environ)
+
+    def test_cli_no_hotword_file_option(self):
+        """Test the 'run' command unsets the environment variable if --hotword-file is not used."""
+        env_var = "EASY_ASR_HOTWORD_FILE"
+        
+        # Mock necessary functions and ensure the env var exists initially
+        with mock.patch('easy_asr_server.api._start_uvicorn') as mock_start, \
+             mock.patch('easy_asr_server.api.setup_logging'), \
+             mock.patch.dict(os.environ, {env_var: "some_initial_value"}, clear=True) as mock_env:
+
+            # Check it exists before invoke
+            self.assertEqual(os.environ.get(env_var), "some_initial_value")
+            
+            result = self.runner.invoke(
+                app_cli, 
+                [] # Invoke without command name
+            )
+
+            mock_start.assert_called_once()
+            # Verify the environment variable was removed by the command logic
+            self.assertNotIn(env_var, os.environ)
+            self.assertIsNone(os.environ.get(env_var))
+            # Check default env vars are still set
+            self.assertIn("EASY_ASR_DEVICE", os.environ)
+            self.assertIn("EASY_ASR_PIPELINE", os.environ)
+            self.assertIn("EASY_ASR_LOG_LEVEL", os.environ)
 
     def test_cli_invalid_pipeline(self):
         """Test the 'run' command exits with an error for an invalid pipeline."""

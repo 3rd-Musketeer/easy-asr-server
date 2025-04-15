@@ -36,8 +36,8 @@ app_state: Dict[str, Any] = {
     "model_manager": None,
     "asr_engine": None,
     "pipeline_type": DEFAULT_PIPELINE,
-    "device": "auto",
-    "hotword_file_path": None # Add state for hotword file path
+    # "device": "auto", # Remove initial device state
+    # "hotword_file_path": None # Remove from initial state
 }
 
 
@@ -49,10 +49,25 @@ async def lifespan(app: FastAPI):
     """
     # Startup: Initialize ModelManager and ASREngine
     logger.info("Starting up ASR server worker...")
-    setup_logging() # Ensure logging is set up in each worker
-
-    pipeline_type = app_state["pipeline_type"] # Get config from global state
-    requested_device = app_state["device"]
+    
+    # --- Configuration setup within worker --- 
+    # Read configurations from environment variables set by the main process
+    log_level_str = os.environ.get("EASY_ASR_LOG_LEVEL", "INFO")
+    setup_logging(level=logging._checkLevel(log_level_str)) # Use _checkLevel for str->int
+    
+    app_state["hotword_file_path"] = os.environ.get("EASY_ASR_HOTWORD_FILE")
+    if app_state["hotword_file_path"]:
+        logger.info(f"Worker using hotword file from environment: {app_state['hotword_file_path']}")
+    else:
+        logger.info("Worker started without a configured hotword file.")
+        
+    # Existing pipeline and device setup (already uses app_state)
+    # pipeline_type = app_state["pipeline_type"] # Get config from global state
+    # requested_device = app_state["device"]
+    pipeline_type = os.environ.get("EASY_ASR_PIPELINE", DEFAULT_PIPELINE)
+    requested_device = os.environ.get("EASY_ASR_DEVICE", "auto")
+    app_state["pipeline_type"] = pipeline_type # Store for health check etc.
+    
     resolved_device = None # Initialize
     
     try:
@@ -96,7 +111,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Easy ASR Server",
     description="A simple high-concurrency speech recognition service based on FunASR",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan
 )
 
@@ -343,8 +358,8 @@ def run(
     # Store configuration in the global state BEFORE uvicorn starts workers
     # Each worker will read this state during its lifespan startup.
     app_state["pipeline_type"] = pipeline
-    app_state["device"] = device
-    app_state["hotword_file_path"] = hotword_file # Store the hotword file path
+    # app_state["device"] = device # Don't set state directly
+    # app_state["hotword_file_path"] = hotword_file # Store the hotword file path
     
     # Setup logging for the main process (workers set up their own via lifespan)
     setup_logging(level=log_level.upper())
@@ -356,6 +371,18 @@ def run(
     logger.info(f"  Device: {device}")
     logger.info(f"  Pipeline: {pipeline}")
     logger.info(f"  Log Level: {log_level}")
+
+    # Set environment variables for worker configuration BEFORE starting Uvicorn
+    os.environ["EASY_ASR_PIPELINE"] = pipeline # Also use env var for pipeline
+    os.environ["EASY_ASR_DEVICE"] = device
+    os.environ["EASY_ASR_LOG_LEVEL"] = log_level.upper() # Pass log level too
+    
+    if hotword_file:
+        logger.info(f"  Setting EASY_ASR_HOTWORD_FILE environment variable to: {hotword_file}")
+        os.environ["EASY_ASR_HOTWORD_FILE"] = hotword_file
+    else:
+        # Ensure env var is not set if option is not provided (or explicitly cleared if needed)
+        os.environ.pop("EASY_ASR_HOTWORD_FILE", None)
 
     # Call the separate function to run Uvicorn
     _start_uvicorn(host=host, port=port, workers=workers, log_level=log_level)
