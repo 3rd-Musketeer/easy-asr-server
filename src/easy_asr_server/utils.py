@@ -253,7 +253,13 @@ def save_audio_to_file(
         file_path: Optional path to save the file. If None, a temporary file is created.
         
     Returns:
-        str: Path to the saved file
+        str: Path to the saved file. If file_path was None, returns a temporary file path
+             that the CALLER IS RESPONSIBLE FOR DELETING after use.
+        
+    Warning:
+        When file_path is None, this function creates a temporary file that will NOT be
+        automatically deleted. The caller must delete the returned file path to avoid
+        disk space leaks.
     """
     if file_path is None:
         temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
@@ -315,3 +321,76 @@ def read_hotwords(file_path: Optional[str]) -> str:
     except Exception as e:
         logger.error(f"Unexpected error reading hotword file {file_path}: {e}")
         return ""
+
+
+def read_audio_bytes(audio_bytes: BinaryIO) -> np.ndarray:
+    """
+    Read audio data from BytesIO and process it to standard format numpy array.
+    
+    Args:
+        audio_bytes: BytesIO object containing audio data
+        
+    Returns:
+        np.ndarray: float32, 1D array at 16kHz sample rate
+        
+    Raises:
+        AudioProcessingError: If audio processing fails
+    """
+    temp_input_path = None
+    try:
+        # Reset BytesIO position to beginning
+        original_pos = audio_bytes.tell()
+        audio_bytes.seek(0)
+        
+        # Save BytesIO content to temporary file for torchaudio to read
+        with tempfile.NamedTemporaryFile(suffix='.tmp', delete=False) as tmp:
+            tmp.write(audio_bytes.read())
+            temp_input_path = tmp.name
+        
+        # Reset BytesIO position back to original
+        audio_bytes.seek(original_pos)
+        
+        # Load the audio using torchaudio
+        try:
+            waveform, sample_rate = torchaudio.load(temp_input_path)
+        except Exception as e:
+            raise AudioProcessingError(f"Failed to load audio data: {str(e)}")
+        
+        # Convert to mono if stereo
+        if waveform.shape[0] > 1:
+            logger.debug(f"Converting audio from {waveform.shape[0]} channels to mono")
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        
+        # Resample if needed
+        if sample_rate != REQUIRED_SAMPLE_RATE:
+            logger.debug(f"Resampling audio from {sample_rate}Hz to {REQUIRED_SAMPLE_RATE}Hz")
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, 
+                new_freq=REQUIRED_SAMPLE_RATE
+            )
+            waveform = resampler(waveform)
+        
+        # Convert to numpy array and flatten to 1D
+        audio_array = waveform.squeeze().numpy().astype(np.float32)
+        
+        # Ensure 1D array (in case of single-sample audio)
+        if audio_array.ndim == 0:
+            audio_array = np.array([audio_array], dtype=np.float32)
+        
+        logger.debug(f"Successfully processed audio to numpy array: shape={audio_array.shape}, dtype={audio_array.dtype}")
+        return audio_array
+        
+    except AudioProcessingError:
+        # Re-raise AudioProcessingError as-is
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in read_audio_bytes: {str(e)}", exc_info=True)
+        raise AudioProcessingError(f"Failed to process audio bytes: {str(e)}")
+    finally:
+        # Clean up temporary file
+        if temp_input_path and os.path.exists(temp_input_path):
+            try:
+                os.unlink(temp_input_path)
+                logger.debug(f"Cleaned up temporary file: {temp_input_path}")
+            except OSError as e:
+                logger.warning(f"Failed to delete temporary file {temp_input_path}: {e}")

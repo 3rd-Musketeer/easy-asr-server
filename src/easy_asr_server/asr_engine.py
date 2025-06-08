@@ -68,25 +68,49 @@ class ASREngine:
     #         logger.error(f"Failed to load FunASR AutoModel: {str(e)}", exc_info=True)
     #         raise RuntimeError(f"Could not load the ASR model pipeline.") from e
 
-    def recognize(self, audio_input: str, hotword: str = "") -> str:
+    def recognize(self, audio_input, hotword: str = "") -> str:
         """
-        Recognize speech from an audio file path.
+        Recognize speech from audio input.
 
         Args:
-            audio_input: Path to the audio file.
+            audio_input: Either a file path (str) or audio array (np.ndarray).
+                        If np.ndarray, must be 1D float32 array at 16kHz.
             hotword: Optional space-separated string of hotwords.
 
         Returns:
             The recognized text transcription.
         Raises:
+            ValueError: If audio_input format is invalid.
             RuntimeError: If the underlying model manager fails during generation.
         """
         logger.info("Received audio for recognition.")
+        
+        # Input validation and type checking
+        if isinstance(audio_input, str):
+            # File path input (existing functionality)
+            input_description = f"file: {os.path.basename(audio_input)}"
+            
+        elif isinstance(audio_input, np.ndarray):
+            # Numpy array input (new functionality)
+            if audio_input.ndim != 1:
+                raise ValueError(f"Audio array must be 1-dimensional, got shape: {audio_input.shape}")
+            
+            if audio_input.dtype != np.float32:
+                raise ValueError(f"Audio array must be float32, got dtype: {audio_input.dtype}")
+            
+            if len(audio_input) < 512:
+                raise ValueError(f"Audio array too short: {len(audio_input)} samples (minimum 512)")
+            
+            input_description = f"numpy array: {audio_input.shape} samples"
+            
+        else:
+            raise TypeError(f"audio_input must be str or np.ndarray, got: {type(audio_input)}")
+        
         try:
             # Delegate the actual generation to the ModelManager
             # Pass the hotword string along
             result = self.model_manager.generate(input_audio=audio_input, hotword=hotword)
-            logger.info(f"Recognition successful for input: {os.path.basename(audio_input)}")
+            logger.info(f"Recognition successful for input: {input_description}")
             return result
         except Exception as e:
             logger.error(f"Error during ASR processing: {str(e)}", exc_info=True)
