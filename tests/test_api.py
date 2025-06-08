@@ -1,5 +1,5 @@
 """
-Tests for the API module.
+Tests for the high-level API module (EasyASR and related functions).
 """
 
 import os
@@ -7,444 +7,338 @@ import io
 import unittest
 import tempfile
 from unittest import mock
+import numpy as np
 import torch
 import torchaudio
-import json
-from fastapi import HTTPException, UploadFile
 
-from fastapi.testclient import TestClient
-
-# Import the FastAPI app instance and the dependency function
-from easy_asr_server.api import app, get_asr_engine, app_state
+# Import the new high-level API components
+from easy_asr_server.api import (
+    EasyASR,
+    create_asr_engine,
+    recognize,
+    get_available_pipelines,
+    get_default_pipeline
+)
+from easy_asr_server.model_manager import ModelManager, MODEL_CONFIGS
 from easy_asr_server.asr_engine import ASREngine
-from easy_asr_server.utils import AudioProcessingError, resolve_device_string # Assuming resolve_device_string will be here
-# Need List for type hinting in PUT test payload
-from typing import List
-# Import Typer testing utilities and the CLI app
-from typer.testing import CliRunner
-from easy_asr_server.api import app_cli
 
 
-# Create a mock ASREngine for dependency injection
-mock_engine = mock.MagicMock(spec=ASREngine)
-
-
-# Dependency override function
-async def override_get_asr_engine() -> ASREngine:
-    """Override the dependency to return our mock engine, simulating health check."""
-    # Simulate the health check logic from the original dependency
-    if not mock_engine.test_health():
-        raise HTTPException(
-            status_code=503, # Use integer status code
-            detail="ASR service is currently unhealthy (mocked)."
-        )
-    return mock_engine
-
-
-class TestAPI(unittest.TestCase):
-    """Test cases for the API endpoints using dependency overrides"""
+class TestEasyASRAPI(unittest.TestCase):
+    """Test cases for the high-level EasyASR API."""
     
     def setUp(self):
         """Setup for tests"""
-        # Create a temporary directory
         self.temp_dir = tempfile.mkdtemp()
-        
-        # Create a test audio file
         self.test_audio_path = os.path.join(self.temp_dir, "test_audio.wav")
         self._create_test_audio_file(self.test_audio_path)
         
-        # Reset the mock engine before each test
-        mock_engine.reset_mock()
-        # Default healthy state
-        mock_engine.test_health.return_value = True
-        mock_engine.recognize.return_value = "mock recognized text"
-        mock_engine.recognize.side_effect = None # Clear any previous side effects
-
-        # Set mock values for app_state used by health check endpoint
-        self.original_app_state = app_state.copy()
-        app_state["pipeline_type"] = "mock_pipeline"
-        app_state["device"] = "mock_device"
-        
-        # Define a dummy path to be returned by mocked process_audio
-        self.dummy_processed_path = os.path.join(self.temp_dir, "processed_audio.wav")
-        # Touch the file so os.path.exists is true for the finally block test
-        open(self.dummy_processed_path, 'a').close()
-
-        # Apply the dependency override
-        app.dependency_overrides[get_asr_engine] = override_get_asr_engine
-        
-        # Create the TestClient using the app with overrides
-        self.client = TestClient(app)
+        # Create test audio array
+        self.test_audio_array = np.random.rand(16000).astype(np.float32)
     
     def tearDown(self):
         """Cleanup after tests"""
         import shutil
         shutil.rmtree(self.temp_dir)
-        
-        # Clear the dependency overrides
-        app.dependency_overrides.clear()
-        # Restore original app_state
-        app_state.clear()
-        app_state.update(self.original_app_state)
-
     
     def _create_test_audio_file(self, file_path, sample_rate=16000, duration=1.0):
         """Create a test audio file"""
-        # Generate a sine wave
         samples = int(sample_rate * duration)
         t = torch.linspace(0, duration, samples)
-        wave = torch.sin(2 * torch.pi * 440 * t).unsqueeze(0)  # 440 Hz sine wave, mono
-        
-        # Save the file
+        wave = torch.sin(2 * torch.pi * 440 * t).unsqueeze(0)
         torchaudio.save(file_path, wave, sample_rate)
         return file_path
-    
-    def test_health_endpoint(self):
-        """Test the health check endpoint"""
-        response = self.client.get("/asr/health")
-        self.assertEqual(response.status_code, 200)
-        # Check for the new response format
-        self.assertEqual(response.json(), {
-            "status": "healthy", 
-            "pipeline": "mock_pipeline", # Value from mocked app_state
-            "device": "mock_device" # Value from mocked app_state
-        })
+
+    @mock.patch('easy_asr_server.api.resolve_device_string')
+    @mock.patch('easy_asr_server.api.ModelManager')
+    @mock.patch('easy_asr_server.api.ASREngine')
+    def test_easy_asr_initialization_success(self, mock_asr_engine_class, mock_model_manager_class, mock_resolve_device):
+        """Test successful EasyASR initialization"""
+        # Setup mocks
+        mock_resolve_device.return_value = "cpu"
+        mock_model_manager = mock.MagicMock()
+        mock_model_manager_class.return_value = mock_model_manager
         
-        # Verify that the health check on the *mock engine* was called by the dependency
-        mock_engine.test_health.assert_called_once()
-    
-    def test_recognize_endpoint(self):
-        """Test the recognize endpoint with a valid audio file"""
-        # Mock process_audio, read_hotwords, os.unlink, os.path.exists
-        expected_hotword = "" # Default expected hotword when not specifically testing it
-        with mock.patch('easy_asr_server.api.process_audio') as mock_process, \
-             mock.patch('easy_asr_server.api.read_hotwords') as mock_read_hotwords, \
-             mock.patch('os.unlink') as mock_unlink, \
-             mock.patch('os.path.exists') as mock_exists:
-            
-            mock_process.return_value = self.dummy_processed_path
-            mock_read_hotwords.return_value = expected_hotword
-            mock_exists.side_effect = lambda p: p == self.dummy_processed_path
-            
-            # Open the test audio file
-            with open(self.test_audio_path, "rb") as f:
-                # Create a dummy UploadFile using BytesIO
-                upload_file = UploadFile(filename="test_audio.wav", file=io.BytesIO(f.read()))
+        mock_asr_engine = mock.MagicMock()
+        mock_asr_engine.test_health.return_value = True
+        mock_asr_engine_class.return_value = mock_asr_engine
         
-            # Send a request with the audio file
-            response = self.client.post(
-                "/asr/recognize",
-                # Pass the dummy UploadFile object
-                files={"audio": (upload_file.filename, upload_file.file, upload_file.content_type)} 
-            )
-            
-            # Check the response (still expecting {"text": "..."})
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), {"text": "mock recognized text"})
-            
-            # Verify process_audio was called (once, with a file-like object)
-            mock_process.assert_called_once()
-            # Verify read_hotwords was called with path from app_state
-            mock_read_hotwords.assert_called_once_with(app_state.get("hotword_file_path"))
-            # Verify that the recognize method on the mock engine was called with the path and hotword
-            mock_engine.recognize.assert_called_once_with(self.dummy_processed_path, hotword=expected_hotword)
-
-            # Verify that os.path.exists was called in the finally block
-            mock_exists.assert_called_with(self.dummy_processed_path)
-            # Verify os.unlink was called to clean up the dummy processed file
-            mock_unlink.assert_called_once_with(self.dummy_processed_path)
-    
-    def test_recognize_endpoint_with_invalid_audio(self):
-        """Test the recognize endpoint with invalid audio data"""
-        # Mock the process_audio function to raise an AudioProcessingError
-        # Need to import AudioProcessingError if not already done
-        # from easy_asr_server.utils import AudioProcessingError
-        with mock.patch('easy_asr_server.api.process_audio') as mock_process:
-            mock_process.side_effect = AudioProcessingError("Invalid audio format detected")
-            
-            # Send a request with invalid audio data
-            # Create a dummy UploadFile
-            invalid_file = UploadFile(filename="invalid_audio.txt", file=io.BytesIO(b"not an audio file"))
-            response = self.client.post(
-                "/asr/recognize",
-                # Pass the dummy UploadFile object
-                files={"audio": (invalid_file.filename, invalid_file.file, invalid_file.content_type)}
-            )
-            
-            # Should return a 400 bad request
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("Invalid or unsupported audio file", response.json()["detail"])
-            self.assertIn("Invalid audio format detected", response.json()["detail"])
-            # Ensure the engine recognize was NOT called
-            mock_engine.recognize.assert_not_called()
-    
-    def test_recognize_endpoint_with_asr_error(self):
-        """Test the recognize endpoint when ASR recognition fails"""
-        error_message = "Internal ASR engine failure"
-        mock_engine.recognize.side_effect = RuntimeError(error_message)
-        expected_hotword = "" # Default expected hotword
+        # Test initialization
+        asr = EasyASR(pipeline="sensevoice", device="cpu", hotwords="test", auto_init=True)
         
-        # Mock process_audio, read_hotwords, os.unlink, os.path.exists
-        with mock.patch('easy_asr_server.api.process_audio') as mock_process, \
-             mock.patch('easy_asr_server.api.read_hotwords') as mock_read_hotwords, \
-             mock.patch('os.unlink') as mock_unlink, \
-             mock.patch('os.path.exists') as mock_exists:
-            
-            mock_process.return_value = self.dummy_processed_path
-            mock_read_hotwords.return_value = expected_hotword
-            mock_exists.side_effect = lambda p: p == self.dummy_processed_path
+        # Verify calls
+        mock_resolve_device.assert_called_once_with("cpu")
+        mock_model_manager_class.assert_called_once()
+        mock_model_manager.load_pipeline.assert_called_once_with(
+            pipeline_type="sensevoice", 
+            device="cpu"
+        )
+        mock_asr_engine_class.assert_called_once_with(model_manager=mock_model_manager)
+        mock_asr_engine.test_health.assert_called_once()
         
-            # Open the test audio file
-            with open(self.test_audio_path, "rb") as f:
-                # Create a dummy UploadFile
-                upload_file = UploadFile(filename="test_audio.wav", file=io.BytesIO(f.read()))
+        # Verify state
+        self.assertTrue(asr._initialized)
+        self.assertTrue(asr.is_healthy())
+
+    def test_easy_asr_invalid_pipeline(self):
+        """Test EasyASR with invalid pipeline"""
+        with self.assertRaises(ValueError) as context:
+            EasyASR(pipeline="invalid_pipeline")
         
-            # Send a request with the audio file
-            response = self.client.post(
-                "/asr/recognize",
-                # Pass the dummy UploadFile object
-                files={"audio": (upload_file.filename, upload_file.file, upload_file.content_type)}
-            )
-            
-            # Should return a 500 internal server error
-            self.assertEqual(response.status_code, 500)
-            # Check the generic error detail message from the API handler
-            self.assertIn("internal engine error", response.json()["detail"].lower())
+        self.assertIn("Invalid pipeline 'invalid_pipeline'", str(context.exception))
 
-            # Verify process_audio was called
-            mock_process.assert_called_once()
-            mock_read_hotwords.assert_called_once_with(app_state.get("hotword_file_path"))
-            # Verify engine.recognize was called (where the error originated) with the hotword
-            mock_engine.recognize.assert_called_once_with(self.dummy_processed_path, hotword=expected_hotword)
-            # Verify cleanup was attempted
-            mock_exists.assert_called_with(self.dummy_processed_path)
-            mock_unlink.assert_called_once_with(self.dummy_processed_path)
-    
-    def test_health_endpoint_with_unhealthy_engine(self):
-        """Test the health check endpoint when the engine is unhealthy"""
-        # Set the mock engine to report as unhealthy
-        mock_engine.test_health.return_value = False
+    @mock.patch('easy_asr_server.api.resolve_device_string')
+    @mock.patch('easy_asr_server.api.ModelManager')
+    def test_easy_asr_initialization_failure(self, mock_model_manager_class, mock_resolve_device):
+        """Test EasyASR initialization failure"""
+        # Setup mocks to fail
+        mock_resolve_device.return_value = "cpu"
+        mock_model_manager_class.side_effect = RuntimeError("Model load failed")
         
-        # Send a request to the health endpoint
-        response = self.client.get("/asr/health")
+        with self.assertRaises(RuntimeError) as context:
+            EasyASR(pipeline="sensevoice", auto_init=True)
         
-        # Should return a 503 service unavailable
-        self.assertEqual(response.status_code, 503)
-        self.assertIn("unhealthy", response.json()["detail"].lower())
+        self.assertIn("ASR initialization failed", str(context.exception))
 
-    def test_put_hotwords_invalid_payload(self):
-        """Test PUT /asr/hotwords with invalid payloads."""
-        invalid_payloads = [
-            {"hotwords": "invalid"},
-            {"hotwords": ["valid", 123]},
-            {"hotwords": ["valid", "valid", "valid"]},
-            {"hotwords": ["valid", "valid", "valid", "valid", "valid"]},
-            {"hotwords": ["valid", "valid", "valid", "valid", "valid", "valid"]},
-        ]
+    @mock.patch('easy_asr_server.api.resolve_device_string')
+    @mock.patch('easy_asr_server.api.ModelManager')
+    @mock.patch('easy_asr_server.api.ASREngine')
+    def test_easy_asr_recognition_success(self, mock_asr_engine_class, mock_model_manager_class, mock_resolve_device):
+        """Test successful recognition with EasyASR"""
+        # Setup mocks
+        mock_resolve_device.return_value = "cpu"
+        mock_model_manager = mock.MagicMock()
+        mock_model_manager_class.return_value = mock_model_manager
         
-        for payload in invalid_payloads:
-            response = self.client.put("/asr/hotwords", json=payload)
-            # Check only for 422 status code, as detail format can be complex
-            self.assertEqual(response.status_code, 422)
-
-    def test_put_hotwords_write_error(self):
-        """Test PUT /asr/hotwords when writing the file causes an IOError."""
-        # Implementation for this test case
-
-
-class TestCLI(unittest.TestCase):
-    """Test cases specifically for the Typer CLI interface."""
-
-    def setUp(self):
-        self.runner = CliRunner()
-        # Store original app_state values to restore later - No longer needed for hotword path
-        # self.original_hotword_path = app_state.get("hotword_file_path")
-
-    def tearDown(self):
-        # Restore original state - No longer needed for hotword path
-        # app_state["hotword_file_path"] = self.original_hotword_path
-        pass # No app_state cleanup needed for hotword path now
-
-    def test_cli_hotword_file_option(self):
-        """Test the 'run' command sets the environment variable for --hotword-file."""
-        dummy_path = "/path/to/my/hotwords.txt"
-        env_var = "EASY_ASR_HOTWORD_FILE"
+        mock_asr_engine = mock.MagicMock()
+        mock_asr_engine.test_health.return_value = True
+        mock_asr_engine.recognize.return_value = "test recognition result"
+        mock_asr_engine_class.return_value = mock_asr_engine
         
-        # Mock the function that actually starts the server to prevent it running
-        # Also mock setup_logging as it's called in the command
-        # Use patch.dict to manage the environment variable for the test
-        with mock.patch('easy_asr_server.api._start_uvicorn') as mock_start, \
-             mock.patch('easy_asr_server.api.setup_logging') as mock_log_setup, \
-             mock.patch.dict(os.environ, {}, clear=True) as mock_env: # Start with clean env for test
-            
-            result = self.runner.invoke(
-                app_cli, 
-                ["--hotword-file", dummy_path]
-            )
-            
-            # print(f"CLI Invoke Result: {result.stdout}, Exit Code: {result.exit_code}") # Debugging
-            # self.assertEqual(result.exit_code, 0) # Optional: Check exit code if desired
-
-            # Verify _start_uvicorn was called (meaning command logic ran up to that point)
-            mock_start.assert_called_once() 
-            # Verify the environment variable was set correctly
-            self.assertEqual(os.environ.get(env_var), dummy_path)
-            # Ensure app_state is NOT set directly by the command anymore
-            self.assertIsNone(app_state.get("hotword_file_path"))
-            # Also check device/pipeline env vars are set if needed in other tests
-            self.assertIn("EASY_ASR_DEVICE", os.environ)
-            self.assertIn("EASY_ASR_PIPELINE", os.environ)
-            self.assertIn("EASY_ASR_LOG_LEVEL", os.environ)
-
-    def test_cli_no_hotword_file_option(self):
-        """Test the 'run' command unsets the environment variable if --hotword-file is not used."""
-        env_var = "EASY_ASR_HOTWORD_FILE"
+        # Test recognition
+        asr = EasyASR(pipeline="sensevoice", hotwords="test hotwords")
+        result = asr.recognize(self.test_audio_path)
         
-        # Mock necessary functions and ensure the env var exists initially
-        with mock.patch('easy_asr_server.api._start_uvicorn') as mock_start, \
-             mock.patch('easy_asr_server.api.setup_logging'), \
-             mock.patch.dict(os.environ, {env_var: "some_initial_value"}, clear=True) as mock_env:
+        # Verify result
+        self.assertEqual(result, "test recognition result")
+        mock_asr_engine.recognize.assert_called_once_with(
+            self.test_audio_path, 
+            hotword="test hotwords"
+        )
 
-            # Check it exists before invoke
-            self.assertEqual(os.environ.get(env_var), "some_initial_value")
-            
-            result = self.runner.invoke(
-                app_cli, 
-                [] # Invoke without command name
-            )
+    @mock.patch('easy_asr_server.api.resolve_device_string')
+    @mock.patch('easy_asr_server.api.ModelManager')
+    @mock.patch('easy_asr_server.api.ASREngine')
+    def test_easy_asr_recognition_with_array(self, mock_asr_engine_class, mock_model_manager_class, mock_resolve_device):
+        """Test recognition with numpy array input"""
+        # Setup mocks
+        mock_resolve_device.return_value = "cpu"
+        mock_model_manager = mock.MagicMock()
+        mock_model_manager_class.return_value = mock_model_manager
+        
+        mock_asr_engine = mock.MagicMock()
+        mock_asr_engine.test_health.return_value = True
+        mock_asr_engine.recognize.return_value = "array recognition result"
+        mock_asr_engine_class.return_value = mock_asr_engine
+        
+        # Test recognition with numpy array
+        asr = EasyASR(pipeline="sensevoice")
+        result = asr.recognize(self.test_audio_array, hotwords="override hotwords")
+        
+        # Verify result
+        self.assertEqual(result, "array recognition result")
+        mock_asr_engine.recognize.assert_called_once_with(
+            self.test_audio_array, 
+            hotword="override hotwords"
+        )
 
-            mock_start.assert_called_once()
-            # Verify the environment variable was removed by the command logic
-            self.assertNotIn(env_var, os.environ)
-            self.assertIsNone(os.environ.get(env_var))
-            # Check default env vars are still set
-            self.assertIn("EASY_ASR_DEVICE", os.environ)
-            self.assertIn("EASY_ASR_PIPELINE", os.environ)
-            self.assertIn("EASY_ASR_LOG_LEVEL", os.environ)
+    @mock.patch('easy_asr_server.api.resolve_device_string')
+    @mock.patch('easy_asr_server.api.ModelManager')
+    @mock.patch('easy_asr_server.api.ASREngine')
+    def test_easy_asr_context_manager(self, mock_asr_engine_class, mock_model_manager_class, mock_resolve_device):
+        """Test EasyASR as context manager"""
+        # Setup mocks
+        mock_resolve_device.return_value = "cpu"
+        mock_model_manager = mock.MagicMock()
+        mock_model_manager_class.return_value = mock_model_manager
+        
+        mock_asr_engine = mock.MagicMock()
+        mock_asr_engine.test_health.return_value = True
+        mock_asr_engine.recognize.return_value = "context result"
+        mock_asr_engine_class.return_value = mock_asr_engine
+        
+        # Test context manager
+        with EasyASR(pipeline="sensevoice", auto_init=False) as asr:
+            # Should auto-initialize on context entry
+            result = asr.recognize(self.test_audio_path)
+            self.assertEqual(result, "context result")
+            self.assertTrue(asr._initialized)
+        
+        # Should be cleaned up after context exit
+        self.assertFalse(asr._initialized)
 
-    def test_cli_invalid_pipeline(self):
-        """Test the 'run' command exits with an error for an invalid pipeline."""
-        with mock.patch('easy_asr_server.api._start_uvicorn') as mock_start, \
-             mock.patch('easy_asr_server.api.setup_logging'): # Mock logging too
-            
-            result = self.runner.invoke(
-                app_cli, 
-                ["--pipeline", "invalid_pipeline_name"]
-            )
-            
-            # Expect a non-zero exit code because pipeline validation fails
-            self.assertNotEqual(result.exit_code, 0)
-            # Check if the error message about invalid pipeline is in the output
-            self.assertIn("Invalid pipeline type", result.stdout)
-            # Ensure the server start function was NOT called
-            mock_start.assert_not_called()
+    @mock.patch('easy_asr_server.api.EasyASR')
+    def test_create_asr_engine_function(self, mock_easy_asr_class):
+        """Test create_asr_engine convenience function"""
+        mock_asr = mock.MagicMock()
+        mock_easy_asr_class.return_value = mock_asr
+        
+        result = create_asr_engine(
+            pipeline="paraformer",
+            device="cuda",
+            hotwords="test",
+            log_level="INFO"
+        )
+        
+        # Verify function call
+        mock_easy_asr_class.assert_called_once_with(
+            pipeline="paraformer",
+            device="cuda",
+            hotwords="test",
+            log_level="INFO",
+            auto_init=True
+        )
+        self.assertEqual(result, mock_asr)
 
+    @mock.patch('easy_asr_server.api.EasyASR')
+    def test_recognize_function_one_shot(self, mock_easy_asr_class):
+        """Test recognize convenience function for one-shot usage"""
+        # Setup context manager mock properly
+        mock_asr = mock.MagicMock()
+        mock_asr.recognize.return_value = "one-shot result"
+        mock_asr.__enter__.return_value = mock_asr
+        mock_asr.__exit__.return_value = None
+        mock_easy_asr_class.return_value = mock_asr
+        
+        # Test one-shot recognition
+        result = recognize(
+            audio_input=self.test_audio_path,
+            pipeline="sensevoice",
+            device="cpu",
+            hotwords="test hotwords"
+        )
+        
+        # Verify result
+        self.assertEqual(result, "one-shot result")
+        mock_easy_asr_class.assert_called_once_with(
+            pipeline="sensevoice",
+            device="cpu",
+            hotwords="test hotwords"
+        )
+        mock_asr.__enter__.assert_called_once()
+        mock_asr.recognize.assert_called_once_with(self.test_audio_path)
+        mock_asr.__exit__.assert_called_once()
 
-# Add a new test class for device resolution logic
-class TestDeviceResolution(unittest.TestCase):
-    """Tests for the device string resolution and validation logic."""
+    @mock.patch('easy_asr_server.api.EasyASR')
+    def test_recognize_function_with_reused_engine(self, mock_easy_asr_class):
+        """Test recognize function with pre-existing engine"""
+        # Create a mock engine
+        mock_existing_asr = mock.MagicMock()
+        mock_existing_asr.recognize.return_value = "reused engine result"
+        
+        # Test with existing engine
+        result = recognize(
+            audio_input=self.test_audio_array,
+            hotwords="override",
+            asr_engine=mock_existing_asr
+        )
+        
+        # Should not create new engine
+        mock_easy_asr_class.assert_not_called()
+        mock_existing_asr.recognize.assert_called_once_with(
+            self.test_audio_array,
+            hotwords="override"
+        )
+        self.assertEqual(result, "reused engine result")
 
-    @mock.patch('torch.cuda.is_available', return_value=True)
-    @mock.patch('torch.backends.mps.is_available', return_value=False) # Ensure MPS is mocked too
-    def test_resolve_auto_cuda_available(self, mock_mps_available, mock_cuda_available):
-        """Test 'auto' resolves to 'cuda' when CUDA is available."""
-        self.assertEqual(resolve_device_string("auto"), "cuda")
-        mock_cuda_available.assert_called_once()
-        mock_mps_available.assert_not_called() # Should short-circuit
+    def test_get_available_pipelines(self):
+        """Test get_available_pipelines function"""
+        pipelines = get_available_pipelines()
+        
+        # Should return a copy of MODEL_CONFIGS
+        self.assertIsInstance(pipelines, dict)
+        self.assertEqual(pipelines, MODEL_CONFIGS)
+        
+        # Should be a copy, not the same object
+        self.assertIsNot(pipelines, MODEL_CONFIGS)
 
-    @mock.patch('torch.cuda.is_available', return_value=False)
-    @mock.patch('torch.backends.mps.is_available', return_value=True)
-    def test_resolve_auto_mps_available(self, mock_mps_available, mock_cuda_available):
-        """Test 'auto' resolves to 'mps' when CUDA is unavailable but MPS is."""
-        self.assertEqual(resolve_device_string("auto"), "mps")
-        mock_cuda_available.assert_called_once()
-        mock_mps_available.assert_called_once()
+    def test_get_default_pipeline(self):
+        """Test get_default_pipeline function"""
+        default = get_default_pipeline()
+        
+        # Should return the default pipeline name
+        self.assertIsInstance(default, str)
+        self.assertIn(default, MODEL_CONFIGS)
 
-    @mock.patch('torch.cuda.is_available', return_value=False)
-    @mock.patch('torch.backends.mps.is_available', return_value=False)
-    def test_resolve_auto_cpu_fallback(self, mock_mps_available, mock_cuda_available):
-        """Test 'auto' resolves to 'cpu' when neither CUDA nor MPS is available."""
-        self.assertEqual(resolve_device_string("auto"), "cpu")
-        mock_cuda_available.assert_called_once()
-        mock_mps_available.assert_called_once()
+    @mock.patch('easy_asr_server.api.resolve_device_string')
+    @mock.patch('easy_asr_server.api.ModelManager')
+    @mock.patch('easy_asr_server.api.ASREngine')
+    def test_easy_asr_get_info(self, mock_asr_engine_class, mock_model_manager_class, mock_resolve_device):
+        """Test EasyASR get_info method"""
+        # Setup mocks
+        mock_resolve_device.return_value = "cuda"  # Return the resolved device
+        mock_model_manager = mock.MagicMock()
+        mock_model_manager_class.return_value = mock_model_manager
+        
+        mock_asr_engine = mock.MagicMock()
+        mock_asr_engine.test_health.return_value = True
+        mock_asr_engine_class.return_value = mock_asr_engine
+        
+        # Create engine
+        asr = EasyASR(
+            pipeline="paraformer",
+            device="cuda",
+            hotwords="info test"
+        )
+        
+        # Get info
+        info = asr.get_info()
+        
+        # Verify info structure
+        expected_keys = ["pipeline", "device", "resolved_device", "hotwords", "initialized", "healthy"]
+        self.assertEqual(set(info.keys()), set(expected_keys))
+        self.assertEqual(info["pipeline"], "paraformer")
+        self.assertEqual(info["device"], "cuda")
+        self.assertEqual(info["resolved_device"], "cuda")  # Should be the resolved device
+        self.assertEqual(info["hotwords"], "info test")
+        self.assertTrue(info["initialized"])
+        self.assertTrue(info["healthy"])
 
-    def test_resolve_cpu(self):
-        """Test 'cpu' is returned directly."""
-        self.assertEqual(resolve_device_string("cpu"), "cpu")
+    def test_easy_asr_uninitialized_recognition(self):
+        """Test recognition fails on uninitialized engine"""
+        asr = EasyASR(auto_init=False)
+        
+        with self.assertRaises(RuntimeError) as context:
+            asr.recognize(self.test_audio_path)
+        
+        self.assertIn("ASR engine not initialized", str(context.exception))
 
-    @mock.patch('torch.backends.mps.is_available', return_value=True)
-    def test_resolve_mps_available(self, mock_mps_available):
-        """Test 'mps' is returned when MPS is available."""
-        self.assertEqual(resolve_device_string("mps"), "mps")
-        mock_mps_available.assert_called_once()
-
-    @mock.patch('torch.backends.mps.is_available', return_value=False)
-    def test_resolve_mps_unavailable(self, mock_mps_available):
-        """Test 'mps' raises ValueError when MPS is unavailable."""
-        with self.assertRaisesRegex(ValueError, "MPS device requested but not available"):
-            resolve_device_string("mps")
-        mock_mps_available.assert_called_once()
-
-    @mock.patch('torch.cuda.is_available', return_value=True)
-    def test_resolve_cuda_available(self, mock_cuda_available):
-        """Test 'cuda' is returned when CUDA is available."""
-        self.assertEqual(resolve_device_string("cuda"), "cuda")
-        mock_cuda_available.assert_called_once()
-
-    @mock.patch('torch.cuda.is_available', return_value=False)
-    def test_resolve_cuda_unavailable(self, mock_cuda_available):
-        """Test 'cuda' raises ValueError when CUDA is unavailable."""
-        with self.assertRaisesRegex(ValueError, "CUDA device requested but not available"):
-            resolve_device_string("cuda")
-        mock_cuda_available.assert_called_once()
-
-    @mock.patch('torch.cuda.is_available', return_value=True)
-    @mock.patch('torch.cuda.device_count', return_value=2)
-    def test_resolve_cuda_index_available(self, mock_device_count, mock_cuda_available):
-        """Test 'cuda:N' is returned when CUDA and the specific index are available."""
-        self.assertEqual(resolve_device_string("cuda:0"), "cuda:0")
-        self.assertEqual(resolve_device_string("cuda:1"), "cuda:1")
-        mock_cuda_available.assert_called() # Called for each resolve
-        mock_device_count.assert_called() # Called for each resolve with index
-
-    @mock.patch('torch.cuda.is_available', return_value=False)
-    def test_resolve_cuda_index_cuda_unavailable(self, mock_cuda_available):
-        """Test 'cuda:N' raises ValueError when CUDA itself is unavailable."""
-        with self.assertRaisesRegex(ValueError, "CUDA device requested but not available"):
-            resolve_device_string("cuda:0")
-        mock_cuda_available.assert_called_once()
-
-    @mock.patch('torch.cuda.is_available', return_value=True)
-    @mock.patch('torch.cuda.device_count', return_value=1) # Only device 0 exists
-    def test_resolve_cuda_index_invalid_index(self, mock_device_count, mock_cuda_available):
-        """Test 'cuda:N' raises ValueError for an invalid device index."""
-        with self.assertRaisesRegex(ValueError, "Invalid CUDA device index: 1. Available indices: \[0\]"):
-            resolve_device_string("cuda:1")
-        mock_cuda_available.assert_called_once()
-        mock_device_count.assert_called_once()
-
-        # Test negative index - should fail format check due to '-'
-        # with self.assertRaisesRegex(ValueError, "Invalid CUDA device index: -1"): # Basic check for negative
-        #      resolve_device_string("cuda:-1")
-        # Updated expectation: It fails the isdigit() check first.
-        with self.assertRaisesRegex(ValueError, "Invalid CUDA device format: cuda:-1"):
-             resolve_device_string("cuda:-1")
-
-    @mock.patch('torch.cuda.is_available', return_value=True) # Assume CUDA available for parsing check
-    def test_resolve_cuda_index_invalid_format(self, mock_cuda_available):
-        """Test 'cuda:N' raises ValueError for invalid format like 'cuda:abc'."""
-        with self.assertRaisesRegex(ValueError, "Invalid CUDA device format"):
-            resolve_device_string("cuda:abc")
-        mock_cuda_available.assert_called_once() # Check CUDA availability first
-
-    def test_resolve_invalid_string(self):
-        """Test completely invalid device strings raise ValueError."""
-        with self.assertRaisesRegex(ValueError, "Invalid device string specified"):
-            resolve_device_string("invalid_device")
-        with self.assertRaisesRegex(ValueError, "Invalid device string specified"):
-            resolve_device_string("CPU") # Case-sensitive check
-        with self.assertRaisesRegex(ValueError, "Invalid device string specified"):
-            resolve_device_string("") # Empty string
+    @mock.patch('easy_asr_server.api.resolve_device_string')
+    @mock.patch('easy_asr_server.api.ModelManager')
+    @mock.patch('easy_asr_server.api.ASREngine')
+    def test_easy_asr_manual_initialization(self, mock_asr_engine_class, mock_model_manager_class, mock_resolve_device):
+        """Test manual initialization after auto_init=False"""
+        # Setup mocks
+        mock_resolve_device.return_value = "cpu"
+        mock_model_manager = mock.MagicMock()
+        mock_model_manager_class.return_value = mock_model_manager
+        
+        mock_asr_engine = mock.MagicMock()
+        mock_asr_engine.test_health.return_value = True
+        mock_asr_engine_class.return_value = mock_asr_engine
+        
+        # Create without auto-init
+        asr = EasyASR(pipeline="sensevoice", auto_init=False)
+        self.assertFalse(asr._initialized)
+        
+        # Initialize manually
+        success = asr.initialize()
+        self.assertTrue(success)
+        self.assertTrue(asr._initialized)
+        
+        # Should work after manual init
+        mock_asr_engine.recognize.return_value = "manual init result"
+        result = asr.recognize(self.test_audio_path)
+        self.assertEqual(result, "manual init result")
 
 
 if __name__ == '__main__':
