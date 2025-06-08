@@ -10,4 +10,6 @@ pytest>=8.3.5
 python-multipart>=0.0.20
 torch>=2.6.0
 torchaudio>=2.6.0
-uvicorn>=0.34.0 
+uvicorn>=0.34.0
+# Optional dependencies for demo scripts
+sounddevice>=0.4.6  # For live recording demo 

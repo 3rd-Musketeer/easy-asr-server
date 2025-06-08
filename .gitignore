@@ -24,3 +24,5 @@ results/
 # Example outputs/configs
 recorded_audio.wav
 hotword.txt
+
+todo/

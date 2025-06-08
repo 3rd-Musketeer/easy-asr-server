@@ -33,8 +33,9 @@ dependencies = [
     "torchaudio>=2.6.0",
     "uvicorn>=0.34.0",
     "requests>=2.30.0", # For performance_test.py requests
-    "numpy>=1.20.0",    # For performance_test.py audio generation and stats
-    "rich>=13.0.0",     # For performance_test.py table output
+    "numpy>=1.20.0", # For performance_test.py audio generation and stats
+    "rich>=13.0.0", # For performance_test.py table output
+    "sounddevice>=0.5.2",
 ]
 
 [project.urls]
@@ -57,7 +58,7 @@ client = [
 ]
 
 [project.scripts]
-easy-asr-server = "easy_asr_server.api:main"
+easy-asr-server = "easy_asr_server.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

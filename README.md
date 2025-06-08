@@ -19,53 +19,81 @@ Key features:
 - Simple CLI-based configuration
 - Configurable hotword list via file (`--hotword-file`) or API, utilized by supported pipelines (e.g., `paraformer`).
 
-## Installation
+## Quick Start
 
-### Prerequisites
-
-- Python 3.9 or higher
-
-### Setup
-
-#### Option 1: Using uv (Recommended)
-
-[uv](https://github.com/astral-sh/uv) is a fast Python package installer and environment manager.
+### Installation
 
 ```bash
-# Create and activate a virtual environment
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install the package
-uv pip install -e .
+pip install easy-asr-server
 ```
 
-#### Option 2: Using standard Python tools
+### Download Models
+
+Before starting the server, you can pre-download the models for faster startup:
 
 ```bash
-# Create a virtual environment
-python -m venv .venv
+# Download models for a specific pipeline
+easy-asr-server download sensevoice
+easy-asr-server download paraformer
 
-# Activate the virtual environment
-# On Linux/macOS:
-source .venv/bin/activate
-# On Windows:
-# .venv\Scripts\activate
-
-# Install the package with pip
-pip install -e .
-
-# Alternatively, install using requirements.txt
-pip install -r requirements.txt
-pip install -e .
+# Download models for all available pipelines
+easy-asr-server download all
 ```
 
-#### Option 3: Install directly from GitHub
+### Start the Server
 
 ```bash
-# Install the latest version from GitHub
-pip install git+https://github.com/3rd-Musketeer/easy-asr-server.git
+# Start with default settings (SenseVoice pipeline, auto device)
+easy-asr-server run
+
+# Start with specific configuration
+easy-asr-server run --host 0.0.0.0 --port 8080 --pipeline paraformer --device cuda
 ```
+
+## CLI Commands
+
+### `download` - Download Model
+
+Downloads the models for the specified ASR pipeline.
+
+```bash
+easy-asr-server download [PIPELINE] [OPTIONS]
+```
+
+**Arguments:**
+- `PIPELINE`: Pipeline to download models for. Choices: `sensevoice`, `paraformer`, `all`
+
+**Options:**
+- `--log-level TEXT`: Log level (debug, info, warning, error). Default: info
+
+**Examples:**
+```bash
+# Download SenseVoice models
+easy-asr-server download sensevoice
+
+# Download Paraformer models with debug logging
+easy-asr-server download paraformer --log-level debug
+
+# Download all available models
+easy-asr-server download all
+```
+
+### `run` - Start Server
+
+Starts the Easy ASR FastAPI server with specified configurations.
+
+```bash
+easy-asr-server run [OPTIONS]
+```
+
+**Options:**
+- `--host TEXT`: Host address to bind the server to. Default: 127.0.0.1
+- `--port INTEGER`: Port number to bind the server to. Default: 8000
+- `--workers INTEGER`: Number of Uvicorn worker processes. Default: 1
+- `--device TEXT`: Device for model inference ('auto', 'cpu', 'cuda', 'cuda:0', etc.). Default: auto
+- `--pipeline TEXT`: ASR pipeline type to use. Choices: sensevoice, paraformer. Default: sensevoice
+- `--log-level TEXT`: Log level (debug, info, warning, error). Default: info
+- `--hotword-file TEXT`: Path to a file containing hotwords (one per line)
 
 ## Usage
 
