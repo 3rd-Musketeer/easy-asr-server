@@ -24,7 +24,11 @@ Key features:
 ### Installation
 
 ```bash
-pip install easy-asr-server
+# Using pip
+pip install git+https://github.com/3rd-Musketeer/easy-asr-server.git
+
+# Using uv (modern Python package manager)
+uv add git+https://github.com/3rd-Musketeer/easy-asr-server.git
 ```
 
 ### Download Models
