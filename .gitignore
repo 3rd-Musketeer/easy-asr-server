@@ -7,7 +7,7 @@ wheels/
 *.egg-info
 .pytest_cache/
 test_results/
-uv.lock
+
 coverage.xml
 .coverage
 .coverage.*
